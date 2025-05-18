@@ -49,7 +49,7 @@ export default function AuthenticatedLayout({
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="w-full min-h-screen flex items-center justify-center">
         <LoadingSpinner size="lg" />
       </div>
     )
