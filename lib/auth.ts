@@ -1,234 +1,114 @@
-"use server"
+import { createClient } from "@supabase/supabase-js"
 
-import { cookies } from "next/headers"
-import { getServerSupabase } from "./supabase"
-import { v4 as uuidv4 } from "uuid"
+// Create a single supabase client for interacting with your database
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ""
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 
-// Types for users
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+
 export type User = {
   id: string
   name: string
   email: string
+  password?: string
   balance: number
   isAdmin: boolean
-  createdAt: Date
+  createdAt: string
+  level?: number
+  xp?: number
 }
 
-// Register a new user
-export async function registerUser(name: string, email: string, password: string) {
-  const supabase = getServerSupabase()
+// Get the current logged-in user
+export async function getCurrentUser() {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
 
-  // Check if email is already in use
-  const { data: existingUser } = await supabase.from("users").select("*").eq("email", email).single()
+    if (!session) {
+      return null
+    }
 
-  if (existingUser) {
-    return { success: false, message: "Email já cadastrado" }
-  }
+    const { data: user } = await supabase.from("users").select("*").eq("id", session.user.id).single()
 
-  // Create new user
-  const userId = uuidv4()
-  const { error } = await supabase.from("users").insert([
-    {
-      id: userId,
-      name,
-      email,
-      password, // In production, use password hashing
-      balance: 0,
-      is_admin: false,
-    },
-  ])
-
-  if (error) {
-    console.error("Error registering user:", error)
-    return { success: false, message: "Erro ao registrar usuário" }
-  }
-
-  // Set authentication cookie
-  cookies().set("user_id", userId, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 24 * 7, // 1 week
-    path: "/",
-  })
-
-  return {
-    success: true,
-    user: {
-      id: userId,
-      name,
-      email,
-      balance: 0,
-      isAdmin: false,
-      createdAt: new Date(),
-    },
+    return user
+  } catch (error) {
+    console.error("Error getting current user:", error)
+    return null
   }
 }
 
 // Login user
 export async function loginUser(email: string, password: string) {
-  const supabase = getServerSupabase()
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    })
 
-  // Find user by email and password
-  const { data: user, error } = await supabase
-    .from("users")
-    .select("*")
-    .eq("email", email)
-    .eq("password", password) // In production, use password hashing
-    .single()
+    if (error) {
+      return { success: false, message: error.message }
+    }
 
-  if (error || !user) {
-    return { success: false, message: "Email ou senha incorretos" }
-  }
+    // Get user data from the users table
+    const { data: userData } = await supabase.from("users").select("*").eq("id", data.user.id).single()
 
-  // Set authentication cookie
-  cookies().set("user_id", user.id, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 24 * 7, // 1 week
-    path: "/",
-  })
-
-  return {
-    success: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      balance: user.balance,
-      isAdmin: user.is_admin,
-      createdAt: new Date(user.created_at),
-    },
+    return { success: true, user: userData }
+  } catch (error) {
+    console.error("Error logging in:", error)
+    return { success: false, message: "Erro ao fazer login" }
   }
 }
 
-// Get current user
-export async function getCurrentUser() {
-  const userId = cookies().get("user_id")?.value
+// Register user
+export async function registerUser(name: string, email: string, password: string) {
+  try {
+    // Create auth user
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    })
 
-  if (!userId) {
-    return null
-  }
+    if (error) {
+      return { success: false, message: error.message }
+    }
 
-  const supabase = getServerSupabase()
-  const { data: user, error } = await supabase.from("users").select("*").eq("id", userId).single()
+    if (!data.user) {
+      return { success: false, message: "Erro ao criar usuário" }
+    }
 
-  if (error || !user) {
-    return null
-  }
+    // Create user in users table
+    const { error: userError } = await supabase.from("users").insert([
+      {
+        id: data.user.id,
+        name,
+        email,
+        balance: 1000, // Initial balance
+        isAdmin: false,
+        createdAt: new Date().toISOString(),
+        level: 1,
+        xp: 0,
+      },
+    ])
 
-  // Return user without password
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    balance: user.balance,
-    isAdmin: user.is_admin,
-    createdAt: new Date(user.created_at),
+    if (userError) {
+      return { success: false, message: userError.message }
+    }
+
+    return { success: true, user: data.user }
+  } catch (error) {
+    console.error("Error registering:", error)
+    return { success: false, message: "Erro ao registrar usuário" }
   }
 }
 
 // Logout user
 export async function logoutUser() {
-  cookies().delete("user_id")
-  return { success: true }
-}
-
-// Admin functions
-
-// Get all users (admin only)
-export async function getAllUsers() {
-  const currentUser = await getCurrentUser()
-
-  if (!currentUser || !currentUser.isAdmin) {
-    return { success: false, message: "Acesso negado" }
-  }
-
-  const supabase = getServerSupabase()
-  const { data: users, error } = await supabase.from("users").select("*")
-
-  if (error) {
-    console.error("Error fetching users:", error)
-    return { success: false, message: "Erro ao buscar usuários" }
-  }
-
-  // Return all users without passwords
-  return {
-    success: true,
-    users: users.map((user) => ({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      balance: user.balance,
-      isAdmin: user.is_admin,
-      createdAt: new Date(user.created_at),
-    })),
-  }
-}
-
-// Update user balance (admin only)
-export async function updateUserBalance(userId: string, newBalance: number) {
-  const currentUser = await getCurrentUser()
-
-  if (!currentUser || !currentUser.isAdmin) {
-    return { success: false, message: "Acesso negado" }
-  }
-
-  const supabase = getServerSupabase()
-  const { data: user, error } = await supabase
-    .from("users")
-    .update({ balance: newBalance })
-    .eq("id", userId)
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error updating balance:", error)
-    return { success: false, message: "Erro ao atualizar saldo" }
-  }
-
-  return {
-    success: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      balance: user.balance,
-      isAdmin: user.is_admin,
-      createdAt: new Date(user.created_at),
-    },
-  }
-}
-
-// Update own balance (used in games)
-export async function updateOwnBalance(newBalance: number) {
-  const userId = cookies().get("user_id")?.value
-
-  if (!userId) {
-    return { success: false, message: "Usuário não autenticado" }
-  }
-
-  const supabase = getServerSupabase()
-  const { data: user, error } = await supabase
-    .from("users")
-    .update({ balance: newBalance })
-    .eq("id", userId)
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error updating balance:", error)
-    return { success: false, message: "Erro ao atualizar saldo" }
-  }
-
-  return {
-    success: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      balance: user.balance,
-      isAdmin: user.is_admin,
-      createdAt: new Date(user.created_at),
-    },
+  try {
+    await supabase.auth.signOut()
+    return { success: true }
+  } catch (error) {
+    console.error("Error logging out:", error)
+    return { success: false, message: "Erro ao fazer logout" }
   }
 }
