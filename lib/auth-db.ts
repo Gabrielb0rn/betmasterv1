@@ -1,53 +1,53 @@
 "use server"
 
 import { cookies } from "next/headers"
-import { getServerSupabase } from "./supabase"
+import { supabase } from "./supabase"
 import { v4 as uuidv4 } from "uuid"
 
-// Types for users
+// Tipos para os usuários
 export type User = {
   id: string
   name: string
   email: string
+  password: string // Em produção, use hash de senha
   balance: number
   isAdmin: boolean
   createdAt: Date
 }
 
-// Register a new user
+// Função para registrar um novo usuário
 export async function registerUser(name: string, email: string, password: string) {
-  const supabase = getServerSupabase()
-
-  // Check if email is already in use
+  // Verificar se o email já está em uso
   const { data: existingUser } = await supabase.from("users").select("*").eq("email", email).single()
 
   if (existingUser) {
     return { success: false, message: "Email já cadastrado" }
   }
 
-  // Create new user
+  // Criar novo usuário
   const userId = uuidv4()
   const { error } = await supabase.from("users").insert([
     {
       id: userId,
       name,
       email,
-      password, // In production, use password hashing
+      password, // Em produção, use hash de senha
       balance: 0,
       is_admin: false,
+      created_at: new Date().toISOString(),
     },
   ])
 
   if (error) {
-    console.error("Error registering user:", error)
+    console.error("Erro ao registrar usuário:", error)
     return { success: false, message: "Erro ao registrar usuário" }
   }
 
-  // Set authentication cookie
+  // Definir cookie de autenticação
   cookies().set("user_id", userId, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 24 * 7, // 1 week
+    maxAge: 60 * 60 * 24 * 7, // 1 semana
     path: "/",
   })
 
@@ -64,27 +64,25 @@ export async function registerUser(name: string, email: string, password: string
   }
 }
 
-// Login user
+// Função para fazer login
 export async function loginUser(email: string, password: string) {
-  const supabase = getServerSupabase()
-
-  // Find user by email and password
+  // Buscar usuário pelo email
   const { data: user, error } = await supabase
     .from("users")
     .select("*")
     .eq("email", email)
-    .eq("password", password) // In production, use password hashing
+    .eq("password", password) // Em produção, use hash de senha
     .single()
 
   if (error || !user) {
     return { success: false, message: "Email ou senha incorretos" }
   }
 
-  // Set authentication cookie
+  // Definir cookie de autenticação
   cookies().set("user_id", user.id, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 24 * 7, // 1 week
+    maxAge: 60 * 60 * 24 * 7, // 1 semana
     path: "/",
   })
 
@@ -101,7 +99,7 @@ export async function loginUser(email: string, password: string) {
   }
 }
 
-// Get current user
+// Função para obter o usuário atual
 export async function getCurrentUser() {
   const userId = cookies().get("user_id")?.value
 
@@ -109,14 +107,13 @@ export async function getCurrentUser() {
     return null
   }
 
-  const supabase = getServerSupabase()
   const { data: user, error } = await supabase.from("users").select("*").eq("id", userId).single()
 
   if (error || !user) {
     return null
   }
 
-  // Return user without password
+  // Retornar usuário sem a senha
   return {
     id: user.id,
     name: user.name,
@@ -127,15 +124,15 @@ export async function getCurrentUser() {
   }
 }
 
-// Logout user
+// Função para fazer logout
 export async function logoutUser() {
   cookies().delete("user_id")
   return { success: true }
 }
 
-// Admin functions
+// Funções para o painel administrativo
 
-// Get all users (admin only)
+// Obter todos os usuários (apenas para admin)
 export async function getAllUsers() {
   const currentUser = await getCurrentUser()
 
@@ -143,15 +140,14 @@ export async function getAllUsers() {
     return { success: false, message: "Acesso negado" }
   }
 
-  const supabase = getServerSupabase()
   const { data: users, error } = await supabase.from("users").select("*")
 
   if (error) {
-    console.error("Error fetching users:", error)
+    console.error("Erro ao buscar usuários:", error)
     return { success: false, message: "Erro ao buscar usuários" }
   }
 
-  // Return all users without passwords
+  // Retornar todos os usuários sem as senhas
   return {
     success: true,
     users: users.map((user) => ({
@@ -165,7 +161,7 @@ export async function getAllUsers() {
   }
 }
 
-// Update user balance (admin only)
+// Atualizar saldo de um usuário (apenas para admin)
 export async function updateUserBalance(userId: string, newBalance: number) {
   const currentUser = await getCurrentUser()
 
@@ -173,7 +169,6 @@ export async function updateUserBalance(userId: string, newBalance: number) {
     return { success: false, message: "Acesso negado" }
   }
 
-  const supabase = getServerSupabase()
   const { data: user, error } = await supabase
     .from("users")
     .update({ balance: newBalance })
@@ -182,7 +177,7 @@ export async function updateUserBalance(userId: string, newBalance: number) {
     .single()
 
   if (error) {
-    console.error("Error updating balance:", error)
+    console.error("Erro ao atualizar saldo:", error)
     return { success: false, message: "Erro ao atualizar saldo" }
   }
 
@@ -199,7 +194,7 @@ export async function updateUserBalance(userId: string, newBalance: number) {
   }
 }
 
-// Update own balance (used in games)
+// Função para atualizar o próprio saldo (usado nos jogos)
 export async function updateOwnBalance(newBalance: number) {
   const userId = cookies().get("user_id")?.value
 
@@ -207,7 +202,6 @@ export async function updateOwnBalance(newBalance: number) {
     return { success: false, message: "Usuário não autenticado" }
   }
 
-  const supabase = getServerSupabase()
   const { data: user, error } = await supabase
     .from("users")
     .update({ balance: newBalance })
@@ -216,7 +210,7 @@ export async function updateOwnBalance(newBalance: number) {
     .single()
 
   if (error) {
-    console.error("Error updating balance:", error)
+    console.error("Erro ao atualizar saldo:", error)
     return { success: false, message: "Erro ao atualizar saldo" }
   }
 

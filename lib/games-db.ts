@@ -1,289 +1,157 @@
-import { supabase } from "./auth"
-import { v4 as uuidv4 } from "uuid"
+"use server"
 
-// Get user bet history
-export async function getUserBetHistory(userId?: string) {
-  try {
-    let userIdToUse = userId
+import { supabase } from "./supabase"
+import { getCurrentUser, updateOwnBalance } from "./auth-db"
 
-    if (!userIdToUse) {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+// Tipo para histórico de apostas
+export type BetHistory = {
+  id: string
+  userId: string
+  gameType: "mines" | "crash" | "plinko"
+  betAmount: number
+  result: number // multiplicador final
+  profit: number // lucro (negativo para perdas)
+  timestamp: Date
+  gameData: any // dados específicos do jogo
+}
 
-      if (!session) {
-        return { success: false, message: "Usuário não autenticado", bets: [] }
-      }
+// Função para registrar uma aposta
+export async function placeBet(
+  gameType: "mines" | "crash" | "plinko",
+  betAmount: number,
+  result: number,
+  gameData: any,
+) {
+  const user = await getCurrentUser()
 
-      userIdToUse = session.user.id
-    }
+  if (!user) {
+    return { success: false, message: "Usuário não autenticado" }
+  }
 
-    const { data, error } = await supabase
-      .from("bet_history")
-      .select("*")
-      .eq("userId", userIdToUse)
-      .order("timestamp", { ascending: false })
+  // Verificar se o usuário tem saldo suficiente
+  if (user.balance < betAmount && result === 0) {
+    return { success: false, message: "Saldo insuficiente" }
+  }
 
-    if (error) {
-      return { success: false, message: error.message, bets: [] }
-    }
+  // Calcular lucro
+  const profit = betAmount * result - betAmount
 
-    return { success: true, bets: data || [] }
-  } catch (error) {
-    console.error("Error getting bet history:", error)
-    return { success: false, message: "Erro ao obter histórico de apostas", bets: [] }
+  // Atualizar saldo do usuário
+  const newBalance = user.balance + profit
+  const updateResult = await updateOwnBalance(newBalance)
+
+  if (!updateResult.success) {
+    return updateResult
+  }
+
+  // Registrar aposta no histórico
+  const { error } = await supabase.from("bet_history").insert([
+    {
+      user_id: user.id,
+      game_type: gameType,
+      bet_amount: betAmount,
+      result,
+      profit,
+      timestamp: new Date().toISOString(),
+      game_data: gameData,
+    },
+  ])
+
+  if (error) {
+    console.error("Erro ao registrar aposta:", error)
+    return { success: false, message: "Erro ao registrar aposta" }
+  }
+
+  return {
+    success: true,
+    newBalance,
   }
 }
 
-// Place a bet and update user balance
-export async function placeBet(gameType: string, betAmount: number, result: number, gameData: any = {}) {
-  try {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+// Função para obter histórico de apostas do usuário
+export async function getUserBetHistory() {
+  const user = await getCurrentUser()
 
-    if (!session) {
-      return { success: false, message: "Usuário não autenticado" }
-    }
+  if (!user) {
+    return { success: false, message: "Usuário não autenticado" }
+  }
 
-    const userId = session.user.id
+  const { data: bets, error } = await supabase
+    .from("bet_history")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("timestamp", { ascending: false })
 
-    // Get current user balance
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("balance")
-      .eq("id", userId)
-      .single()
+  if (error) {
+    console.error("Erro ao buscar histórico de apostas:", error)
+    return { success: false, message: "Erro ao buscar histórico de apostas" }
+  }
 
-    if (userError || !userData) {
-      return { success: false, message: "Erro ao obter saldo do usuário" }
-    }
-
-    // Calculate profit
-    const profit = betAmount * result - betAmount
-
-    // Update user balance
-    const newBalance = userData.balance + profit
-
-    // Update user balance in database
-    const { error: updateError } = await supabase.from("users").update({ balance: newBalance }).eq("id", userId)
-
-    if (updateError) {
-      return { success: false, message: "Erro ao atualizar saldo" }
-    }
-
-    // Record bet in history
-    const { error: historyError } = await supabase.from("bet_history").insert([
-      {
-        id: uuidv4(),
-        userId,
-        gameType,
-        betAmount,
-        result,
-        profit,
-        timestamp: new Date().toISOString(),
-        gameData,
-      },
-    ])
-
-    if (historyError) {
-      console.error("Error recording bet history:", historyError)
-    }
-
-    // Update user XP if they won
-    if (profit > 0) {
-      const xpGained = Math.floor(betAmount * 0.1)
-
-      const { data: userXpData } = await supabase.from("users").select("xp, level").eq("id", userId).single()
-
-      if (userXpData) {
-        const newXp = (userXpData.xp || 0) + xpGained
-        let newLevel = userXpData.level || 1
-
-        // Check if user should level up
-        const { data: levelData } = await supabase
-          .from("levels")
-          .select("level, xp_required")
-          .order("level", { ascending: true })
-
-        if (levelData) {
-          for (const level of levelData) {
-            if (newXp >= level.xp_required && level.level > newLevel) {
-              newLevel = level.level
-            }
-          }
-        }
-
-        // Update user XP and level
-        await supabase.from("users").update({ xp: newXp, level: newLevel }).eq("id", userId)
-      }
-    }
-
-    return { success: true, newBalance }
-  } catch (error) {
-    console.error("Error placing bet:", error)
-    return { success: false, message: "Erro ao processar aposta" }
+  return {
+    success: true,
+    bets: bets.map((bet) => ({
+      id: bet.id,
+      userId: bet.user_id,
+      gameType: bet.game_type,
+      betAmount: bet.bet_amount,
+      result: bet.result,
+      profit: bet.profit,
+      timestamp: new Date(bet.timestamp),
+      gameData: bet.game_data,
+    })),
   }
 }
 
-// Get all users (for admin)
-export async function getAllUsers() {
-  try {
-    const { data, error } = await supabase.from("users").select("*").order("createdAt", { ascending: false })
+// Funções específicas para cada jogo - convertendo para async
+export async function generateMines(totalTiles: number, minesCount: number) {
+  const mines = new Set<number>()
 
-    if (error) {
-      return { success: false, message: error.message, users: [] }
-    }
+  while (mines.size < minesCount) {
+    const mine = Math.floor(Math.random() * totalTiles)
+    mines.add(mine)
+  }
 
-    return { success: true, users: data || [] }
-  } catch (error) {
-    console.error("Error getting users:", error)
-    return { success: false, message: "Erro ao obter usuários", users: [] }
+  return Array.from(mines)
+}
+
+export async function generateCrashPoint() {
+  const random = Math.random()
+
+  if (random < 0.7) {
+    return 1 + Math.random()
+  } else if (random < 0.9) {
+    return 2 + Math.random() * 3
+  } else if (random < 0.98) {
+    return 5 + Math.random() * 15
+  } else {
+    return 20 + Math.random() * 80
   }
 }
 
-// Get all bets (for admin)
-export async function getAllBets() {
-  try {
-    const { data, error } = await supabase
-      .from("bet_history")
-      .select("*, users(name)")
-      .order("timestamp", { ascending: false })
-
-    if (error) {
-      return { success: false, message: error.message, bets: [] }
-    }
-
-    return { success: true, bets: data || [] }
-  } catch (error) {
-    console.error("Error getting bets:", error)
-    return { success: false, message: "Erro ao obter apostas", bets: [] }
+export async function generatePlinkoResult(riskLevel: "low" | "medium" | "high") {
+  const multipliers = {
+    low: [0.2, 0.3, 0.5, 0.8, 1, 1.5, 2, 3],
+    medium: [0.1, 0.3, 0.5, 1, 2, 3, 5, 10],
+    high: [0, 0.2, 0.5, 1, 2, 5, 10, 45],
   }
-}
 
-// Update user balance (for admin)
-export async function updateUserBalance(userId: string, newBalance: number) {
-  try {
-    const { error } = await supabase.from("users").update({ balance: newBalance }).eq("id", userId)
-
-    if (error) {
-      return { success: false, message: error.message }
-    }
-
-    return { success: true }
-  } catch (error) {
-    console.error("Error updating user balance:", error)
-    return { success: false, message: "Erro ao atualizar saldo do usuário" }
+  const probabilities = {
+    low: [5, 10, 15, 20, 20, 15, 10, 5],
+    medium: [5, 10, 15, 20, 20, 15, 10, 5],
+    high: [5, 10, 15, 20, 20, 15, 10, 5],
   }
-}
 
-// Get user by ID
-export async function getUserById(userId: string) {
-  try {
-    const { data, error } = await supabase.from("users").select("*").eq("id", userId).single()
+  const selectedMultipliers = multipliers[riskLevel]
+  const selectedProbabilities = probabilities[riskLevel]
 
-    if (error) {
-      return { success: false, message: error.message, user: null }
+  const weightedArray: number[] = []
+
+  selectedMultipliers.forEach((mult, index) => {
+    for (let i = 0; i < selectedProbabilities[index]; i++) {
+      weightedArray.push(mult)
     }
+  })
 
-    return { success: true, user: data }
-  } catch (error) {
-    console.error("Error getting user:", error)
-    return { success: false, message: "Erro ao obter usuário", user: null }
-  }
-}
-
-// Get game statistics
-export async function getGameStatistics() {
-  try {
-    const { data, error } = await supabase.from("bet_history").select("gameType, betAmount, profit")
-
-    if (error) {
-      return { success: false, message: error.message, stats: null }
-    }
-
-    // Process statistics
-    const stats = {
-      totalBets: data.length,
-      totalBetAmount: data.reduce((sum, bet) => sum + bet.betAmount, 0),
-      totalProfit: data.reduce((sum, bet) => sum + bet.profit, 0),
-      gameBreakdown: {} as Record<string, { bets: number; amount: number; profit: number }>,
-    }
-
-    // Calculate per-game statistics
-    data.forEach((bet) => {
-      if (!stats.gameBreakdown[bet.gameType]) {
-        stats.gameBreakdown[bet.gameType] = { bets: 0, amount: 0, profit: 0 }
-      }
-
-      stats.gameBreakdown[bet.gameType].bets += 1
-      stats.gameBreakdown[bet.gameType].amount += bet.betAmount
-      stats.gameBreakdown[bet.gameType].profit += bet.profit
-    })
-
-    return { success: true, stats }
-  } catch (error) {
-    console.error("Error getting game statistics:", error)
-    return { success: false, message: "Erro ao obter estatísticas", stats: null }
-  }
-}
-
-// Get user level information
-export async function getUserLevelInfo(userId: string) {
-  try {
-    // Get user's current level and XP
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("level, xp")
-      .eq("id", userId)
-      .single()
-
-    if (userError || !userData) {
-      return { success: false, message: "Erro ao obter informações do usuário", levelInfo: null }
-    }
-
-    // Get level requirements
-    const { data: levelData, error: levelError } = await supabase
-      .from("levels")
-      .select("*")
-      .order("level", { ascending: true })
-
-    if (levelError || !levelData) {
-      return { success: false, message: "Erro ao obter informações de níveis", levelInfo: null }
-    }
-
-    // Find current level info
-    const currentLevelInfo = levelData.find((level) => level.level === userData.level) || levelData[0]
-
-    // Find next level info
-    const nextLevelInfo = levelData.find((level) => level.level === userData.level + 1)
-
-    // Calculate progress to next level
-    let progressToNextLevel = 100 // Default to 100% if at max level
-    let xpNeededForNextLevel = 0
-
-    if (nextLevelInfo) {
-      const currentLevelXP = currentLevelInfo.xp_required
-      const nextLevelXP = nextLevelInfo.xp_required
-      const xpRange = nextLevelXP - currentLevelXP
-      const userProgressInRange = userData.xp - currentLevelXP
-      progressToNextLevel = Math.min(100, Math.max(0, (userProgressInRange / xpRange) * 100))
-      xpNeededForNextLevel = nextLevelXP - userData.xp
-    }
-
-    return {
-      success: true,
-      levelInfo: {
-        currentLevel: userData.level,
-        currentXP: userData.xp,
-        currentLevelInfo,
-        nextLevelInfo,
-        progressToNextLevel,
-        xpNeededForNextLevel,
-      },
-    }
-  } catch (error) {
-    console.error("Error getting user level info:", error)
-    return { success: false, message: "Erro ao obter informações de nível", levelInfo: null }
-  }
+  const randomIndex = Math.floor(Math.random() * weightedArray.length)
+  return weightedArray[randomIndex]
 }
